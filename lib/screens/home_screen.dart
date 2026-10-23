@@ -5,14 +5,17 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../config/app_config.dart';
+import '../models/device.dart';
 import '../models/device_location.dart';
 import '../models/device_status.dart';
 import '../models/sensor_reading.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/metric_value.dart';
+import '../widgets/neo_alert_dialog.dart';
 import '../widgets/neo_button.dart';
 import '../widgets/neo_card.dart';
+import '../widgets/neo_chart.dart';
 import '../widgets/neo_toast.dart';
 import '../widgets/status_indicators.dart';
 
@@ -32,10 +35,20 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _memuat = true;
   String? _error;
 
-  SensorReading? _sensor;
-  List<DeviceStatus> _devices = const [];
+  List<Device> _devices = const [];
+  List<SensorReading> _readings = const [];
+  List<DeviceStatus> _deviceStatuses = const [];
   DeviceLocation? _lokasi;
   DateTime? _terakhirUpdate;
+
+  // Filter device terpilih (Pengayaan a)
+  String? _selectedDeviceId;
+
+  // Tampilkan grafik histori suhu (Pengayaan b)
+  bool _tampilkanGrafik = true;
+
+  // Tracking alert suhu panas agar tidak spam dialog (Pengayaan d)
+  DateTime? _terakhirPeringatanPanas;
 
   @override
   void initState() {
@@ -80,30 +93,89 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Menentukan pembacaan sensor terbaru untuk device tertentu
+  /// (Persis sesuai fungsi `latestFor` pada Halaman 7 Labsheet 2).
+  SensorReading? latestFor(String deviceId) {
+    final items = _readings.where((e) => e.deviceId == deviceId).toList();
+    if (items.isEmpty) return null;
+    items.sort((a, b) {
+      final ta = a.createdAt;
+      final tb = b.createdAt;
+      final timeOrder = ta == null && tb == null
+          ? 0
+          : ta == null
+              ? -1
+              : tb == null
+                  ? 1
+                  : ta.compareTo(tb);
+      return timeOrder != 0 ? timeOrder : a.id.compareTo(b.id);
+    });
+    return items.last;
+  }
+
   Future<void> _muat({bool silent = false}) async {
     if (!silent) setState(() => _memuat = true);
 
     try {
-      final sensor = await _api.latestSensor();
-      final devices = await _api.devices();
-      final lokasi = await _api.locations();
+      // Mengambil data secara asinkron dengan Future.wait
+      // (Persis sesuai Langkah 6 Halaman 6 Labsheet 2)
+      final results = await Future.wait([
+        _api.getDevices(),
+        _api.getSensors(),
+        _api.devices(),
+        _api.locations(),
+      ]);
 
       if (!mounted) return;
 
+      final fetchedDevices = results[0] as List<Device>;
+      final fetchedReadings = results[1] as List<SensorReading>;
+      final fetchedStatuses = results[2] as List<DeviceStatus>;
+      final fetchedLocations = results[3] as List<DeviceLocation>;
+
       setState(() {
-        _sensor = sensor;
-        _devices = devices;
-        _lokasi = lokasi.isEmpty ? null : lokasi.first;
+        _devices = fetchedDevices;
+        _readings = fetchedReadings;
+        _deviceStatuses = fetchedStatuses;
+        _lokasi = fetchedLocations.isEmpty ? null : fetchedLocations.first;
         _error = null;
         _terakhirUpdate = DateTime.now();
         _memuat = false;
       });
+
+      // Pemeriksaan suhu panas untuk pop-up dialog (Tugas Pengayaan d)
+      _cekPeringatanSuhuPanas();
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = 'Gagal menghubungi backend: $e';
         _memuat = false;
       });
+    }
+  }
+
+  void _cekPeringatanSuhuPanas() {
+    if (_readings.isEmpty) return;
+    final readingTerbaru = _readings.first;
+    final suhu = readingTerbaru.temperature;
+    if (suhu == null) return;
+
+    // Jika suhu >= 30.0 derajat Celsius dan belum pernah muncul dalam 1 menit
+    if (suhu >= 30.0) {
+      final sekarang = DateTime.now();
+      if (_terakhirPeringatanPanas == null ||
+          sekarang.difference(_terakhirPeringatanPanas!) > const Duration(minutes: 1)) {
+        _terakhirPeringatanPanas = sekarang;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            showNeoHeatAlert(
+              context,
+              deviceId: readingTerbaru.deviceId,
+              suhu: suhu,
+            );
+          }
+        });
+      }
     }
   }
 
@@ -119,15 +191,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _tampilInfoPerangkat(String nama, String pin, String stream, bool nyala) {
-    showNeoToast(
-      context,
-      message: '$nama (${nyala ? 'MENYALA' : 'MATI'}) • $pin • $stream',
-      icon: nyala ? Icons.lightbulb_rounded : Icons.lightbulb_outline_rounded,
-      backgroundColor: nyala ? NeoColors.yellow : NeoColors.muted,
-    );
-  }
-
   LiveStatus get _statusData {
     if (!_autoRefresh) return LiveStatus.paused;
     if (_terakhirUpdate == null) return LiveStatus.waiting;
@@ -137,30 +200,29 @@ class _HomeScreenState extends State<HomeScreen> {
     return umur <= batas ? LiveStatus.live : LiveStatus.stale;
   }
 
-  String _labelPerangkat(String deviceId) {
-    switch (deviceId) {
-      case 'esp32_lampu':
-        return 'Lampu 1';
-      case 'esp32_lampu_2':
-        return 'Lampu 2';
-      default:
-        return deviceId;
+  /// Daftar device setelah difilter oleh dropdown (Pengayaan a)
+  List<Device> get _filteredDevices {
+    if (_selectedDeviceId == null || _selectedDeviceId!.isEmpty) {
+      return _devices;
     }
+    return _devices.where((d) => d.id == _selectedDeviceId).toList();
   }
 
-  String _pinPerangkat(String deviceId) {
-    switch (deviceId) {
-      case 'esp32_lampu':
-        return 'GPIO 18 • BLYNK V0';
-      case 'esp32_lampu_2':
-        return 'GPIO 19 • BLYNK V1';
-      default:
-        return 'GPIO -- • V--';
-    }
+  /// Mengambil riwayat suhu untuk grafik (Pengayaan b)
+  List<double> get _suhuHistory {
+    final list = _readings
+        .where((r) => r.temperature != null)
+        .take(12)
+        .map((r) => r.temperature!)
+        .toList();
+    return list.reversed.toList();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Sensor reading paling representatif
+    final readingUtama = _readings.isNotEmpty ? _readings.first : null;
+
     return Scaffold(
       backgroundColor: NeoColors.background,
       body: SafeArea(
@@ -188,39 +250,47 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 10),
               ],
-              if (_memuat && _sensor == null)
+              if (_memuat && _readings.isEmpty && _devices.isEmpty)
                 const _KartuMemuat()
-              else if (_sensor == null && _error == null)
-                _KartuKosong(onRetry: () => _muat())
               else ...[
                 _KartuSensorUtama(
-                  sensor: _sensor,
+                  reading: readingUtama,
                   terakhirUpdate: _terakhirUpdate,
                   jam: _jam,
                 ),
                 const SizedBox(height: 10),
                 _KartuLokasi(
                   lokasi: _lokasi,
-                  sensor: _sensor,
+                  sensor: readingUtama,
                   onSalin: _salinKoordinat,
                 ),
+                const SizedBox(height: 12),
+                // Tugas Pengayaan b: Grafik Histori Suhu
+                _KartuGrafikHistori(
+                  suhuList: _suhuHistory,
+                  terbuka: _tampilkanGrafik,
+                  onToggle: () => setState(() => _tampilkanGrafik = !_tampilkanGrafik),
+                ),
               ],
-              const SizedBox(height: 14),
-              _JudulBagian(
-                judul: 'STATUS PERANGKAT',
-                jumlah: _devices.length,
+              const SizedBox(height: 16),
+              // Tugas Pengayaan a: Dropdown Pemilihan Device
+              _HeaderPerangkatDenganFilter(
+                devices: _devices,
+                selectedId: _selectedDeviceId,
+                onChanged: (id) => setState(() => _selectedDeviceId = id),
+                jumlah: _filteredDevices.length,
               ),
               const SizedBox(height: 8),
-              _DaftarPerangkat(
-                devices: _devices,
-                label: _labelPerangkat,
-                pin: _pinPerangkat,
-                onTapPerangkat: _tampilInfoPerangkat,
+              _DaftarKartuPerangkat(
+                devices: _filteredDevices,
+                latestFor: latestFor,
+                deviceStatuses: _deviceStatuses,
+                jam: _jam,
               ),
               const SizedBox(height: 20),
               _FooterServer(
                 url: AppConfig.apiBaseUrl,
-                terhubung: _error == null && _sensor != null,
+                terhubung: _error == null && _readings.isNotEmpty,
               ),
             ],
           ),
@@ -257,9 +327,8 @@ class _Header extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Stiker tilted fisik
                   Transform.rotate(
-                    angle: -0.04, // -2.3 derajat miring khas sticker brutalism
+                    angle: -0.04,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
@@ -340,19 +409,19 @@ class _Header extends StatelessWidget {
 
 class _KartuSensorUtama extends StatelessWidget {
   const _KartuSensorUtama({
-    required this.sensor,
+    required this.reading,
     required this.terakhirUpdate,
     required this.jam,
   });
 
-  final SensorReading? sensor;
+  final SensorReading? reading;
   final DateTime? terakhirUpdate;
   final DateFormat jam;
 
   @override
   Widget build(BuildContext context) {
-    final suhu = sensor?.suhu;
-    final kelembapan = sensor?.kelembapan;
+    final suhu = reading?.temperature;
+    final kelembapan = reading?.humidity;
 
     return NeoCard(
       backgroundColor: NeoColors.card,
@@ -404,7 +473,7 @@ class _KartuSensorUtama extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           MetricValue(
             nilai: suhu == null ? '--' : suhu.toStringAsFixed(1),
             satuan: '°C',
@@ -413,7 +482,6 @@ class _KartuSensorUtama extends StatelessWidget {
                 : 'Suhu ${suhu.toStringAsFixed(1)} derajat Celsius',
           ),
           const SizedBox(height: 8),
-          // Indikator level suhu bersegmen brutalist
           _MeterLevelSuhu(suhu: suhu),
           const SizedBox(height: 10),
           Container(
@@ -427,7 +495,7 @@ class _KartuSensorUtama extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFCFFAFE), // pastel cyan solid
+                    color: const Color(0xFFCFFAFE),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: NeoColors.ink, width: 2.2),
                     boxShadow: const [
@@ -473,7 +541,7 @@ class _KartuSensorUtama extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFEDE9FE), // pastel lavender solid
+                    color: const Color(0xFFEDE9FE),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: NeoColors.ink, width: 2.2),
                     boxShadow: const [
@@ -517,13 +585,13 @@ class _KartuSensorUtama extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          const Row(
+          Row(
             children: [
-              Icon(Icons.memory_rounded, size: 13, color: NeoColors.textMuted),
-              SizedBox(width: 6),
+              const Icon(Icons.memory_rounded, size: 13, color: NeoColors.textMuted),
+              const SizedBox(width: 6),
               Text(
-                'DHT22 • PIN GPIO 4 • ESP32 DOIT',
-                style: TextStyle(
+                'DHT22 • PIN GPIO 4 • DEVICE: ${reading?.deviceId ?? "ESP32"}',
+                style: const TextStyle(
                   fontFamily: NeoText.mono,
                   fontSize: 10.5,
                   fontWeight: FontWeight.w600,
@@ -545,7 +613,6 @@ class _KartuSensorUtama extends StatelessWidget {
   }
 }
 
-/// Meter 4 level suhu khas instrumen brutalist
 class _MeterLevelSuhu extends StatelessWidget {
   const _MeterLevelSuhu({required this.suhu});
 
@@ -556,13 +623,13 @@ class _MeterLevelSuhu extends StatelessWidget {
     final s = suhu ?? 25.0;
     final int level;
     if (s < 22) {
-      level = 0; // Sejuk
+      level = 0;
     } else if (s <= 27) {
-      level = 1; // Nyaman
+      level = 1;
     } else if (s <= 32) {
-      level = 2; // Hangat
+      level = 2;
     } else {
-      level = 3; // Panas
+      level = 3;
     }
 
     final segments = [
@@ -740,43 +807,182 @@ class _KartuLokasi extends StatelessWidget {
   }
 }
 
-class _JudulBagian extends StatelessWidget {
-  const _JudulBagian({required this.judul, required this.jumlah});
+/// Tugas Pengayaan b: Grafik Histori Suhu
+class _KartuGrafikHistori extends StatelessWidget {
+  const _KartuGrafikHistori({
+    required this.suhuList,
+    required this.terbuka,
+    required this.onToggle,
+  });
 
-  final String judul;
+  final List<double> suhuList;
+  final bool terbuka;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return NeoCard(
+      backgroundColor: Colors.white,
+      shadowOffset: 3.5,
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: onToggle,
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: NeoColors.yellow,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: NeoColors.ink, width: 1.8),
+                  ),
+                  child: const Icon(Icons.show_chart_rounded, size: 18, color: NeoColors.ink),
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'GRAFIK HISTORI SUHU',
+                  style: TextStyle(
+                    fontFamily: NeoText.display,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 0.8,
+                    color: NeoColors.ink,
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: NeoColors.muted,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: NeoColors.ink, width: 1.2),
+                  ),
+                  child: Text(
+                    terbuka ? 'SEMBUNYIKAN' : 'TAMPILKAN',
+                    style: const TextStyle(
+                      fontFamily: NeoText.display,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: NeoColors.ink,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (terbuka) ...[
+            const SizedBox(height: 12),
+            NeoChart(values: suhuList, height: 90),
+            const SizedBox(height: 6),
+            const Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('← Terdahulu', style: NeoText.monoKecil),
+                Text('Terbaru →', style: NeoText.monoKecil),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Tugas Pengayaan a: Dropdown Filter Device
+class _HeaderPerangkatDenganFilter extends StatelessWidget {
+  const _HeaderPerangkatDenganFilter({
+    required this.devices,
+    required this.selectedId,
+    required this.onChanged,
+    required this.jumlah,
+  });
+
+  final List<Device> devices;
+  final String? selectedId;
+  final ValueChanged<String?> onChanged;
   final int jumlah;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          judul,
-          style: NeoText.sectionTitle,
+        Row(
+          children: [
+            const Text(
+              'DAFTAR PERANGKAT',
+              style: NeoText.sectionTitle,
+            ),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: NeoColors.card,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: NeoColors.ink, width: 1.8),
+                boxShadow: const [
+                  BoxShadow(
+                    color: NeoColors.ink,
+                    offset: Offset(1.8, 1.8),
+                    blurRadius: 0,
+                  ),
+                ],
+              ),
+              child: Text(
+                '$jumlah DEVICE',
+                style: const TextStyle(
+                  fontFamily: NeoText.display,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.5,
+                  color: NeoColors.ink,
+                ),
+              ),
+            ),
+          ],
         ),
-        const Spacer(),
+        const SizedBox(height: 8),
+        // Dropdown filter box bergaya Neobrutalism
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
           decoration: BoxDecoration(
-            color: NeoColors.card,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: NeoColors.ink, width: 1.8),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: NeoColors.ink, width: 2.0),
             boxShadow: const [
               BoxShadow(
                 color: NeoColors.ink,
-                offset: Offset(1.8, 1.8),
+                offset: Offset(2.0, 2.0),
                 blurRadius: 0,
               ),
             ],
           ),
-          child: Text(
-            '$jumlah DEVICE',
-            style: const TextStyle(
-              fontFamily: NeoText.display,
-              fontSize: 11,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.5,
-              color: NeoColors.ink,
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String?>(
+              value: selectedId,
+              isExpanded: true,
+              icon: const Icon(Icons.arrow_drop_down_rounded, color: NeoColors.ink, size: 26),
+              style: const TextStyle(
+                fontFamily: NeoText.display,
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                color: NeoColors.ink,
+              ),
+              items: [
+                const DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text('• SEMUA PERANGKAT (TAMPILKAN SEMUA)'),
+                ),
+                for (final d in devices)
+                  DropdownMenuItem<String?>(
+                    value: d.id,
+                    child: Text('• ${d.name} (${d.id})'),
+                  ),
+              ],
+              onChanged: onChanged,
             ),
           ),
         ),
@@ -785,18 +991,19 @@ class _JudulBagian extends StatelessWidget {
   }
 }
 
-class _DaftarPerangkat extends StatelessWidget {
-  const _DaftarPerangkat({
+/// Daftar kartu perangkat (Sesuai Halaman 8 Labsheet 2)
+class _DaftarKartuPerangkat extends StatelessWidget {
+  const _DaftarKartuPerangkat({
     required this.devices,
-    required this.label,
-    required this.pin,
-    required this.onTapPerangkat,
+    required this.latestFor,
+    required this.deviceStatuses,
+    required this.jam,
   });
 
-  final List<DeviceStatus> devices;
-  final String Function(String) label;
-  final String Function(String) pin;
-  final void Function(String nama, String pin, String stream, bool nyala) onTapPerangkat;
+  final List<Device> devices;
+  final SensorReading? Function(String) latestFor;
+  final List<DeviceStatus> deviceStatuses;
+  final DateFormat jam;
 
   @override
   Widget build(BuildContext context) {
@@ -804,7 +1011,7 @@ class _DaftarPerangkat extends StatelessWidget {
       return NeoCard(
         backgroundColor: Colors.white,
         child: const Text(
-          'Belum ada status perangkat. Tekan saklar di aplikasi Blynk atau Wokwi.',
+          'Belum ada perangkat terdaftar di backend.',
           style: TextStyle(
             fontFamily: NeoText.body,
             fontWeight: FontWeight.w600,
@@ -814,101 +1021,208 @@ class _DaftarPerangkat extends StatelessWidget {
       );
     }
 
-    final urut = [...devices]..sort((a, b) => a.deviceId.compareTo(b.deviceId));
-
     return Column(
       children: [
-        for (final device in urut) ...[
-          _BarisPerangkat(
-            key: ValueKey(device.deviceId),
+        for (final device in devices) ...[
+          _KartuDeviceLabsheet(
+            key: ValueKey(device.id),
             device: device,
-            label: label(device.deviceId),
-            pinInfo: pin(device.deviceId),
-            onTap: () => onTapPerangkat(
-              label(device.deviceId),
-              pin(device.deviceId),
-              device.deviceId,
-              device.menyala,
-            ),
+            latest: latestFor(device.id),
+            deviceStatuses: deviceStatuses,
+            jam: jam,
           ),
-          if (device != urut.last) const SizedBox(height: 12),
+          if (device != devices.last) const SizedBox(height: 12),
         ],
       ],
     );
   }
 }
 
-class _BarisPerangkat extends StatelessWidget {
-  const _BarisPerangkat({
+/// Kartu Device individual persis seperti kode Langkah 6 Halaman 8 Labsheet 2,
+/// namun diperkaya dengan visual Neobrutalism.
+class _KartuDeviceLabsheet extends StatelessWidget {
+  const _KartuDeviceLabsheet({
     super.key,
     required this.device,
-    required this.label,
-    required this.pinInfo,
-    required this.onTap,
+    required this.latest,
+    required this.deviceStatuses,
+    required this.jam,
   });
 
-  final DeviceStatus device;
-  final String label;
-  final String pinInfo;
-  final VoidCallback onTap;
+  final Device device;
+  final SensorReading? latest;
+  final List<DeviceStatus> deviceStatuses;
+  final DateFormat jam;
+
+  bool? get _statusNyala {
+    final cocok = deviceStatuses.where((s) => s.deviceId == device.id).toList();
+    if (cocok.isEmpty) return null;
+    return cocok.first.menyala;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final nyala = device.menyala;
+    final temp = latest?.temperature;
+    final hum = latest?.humidity;
+    final nyala = _statusNyala;
 
     return NeoCard(
-      backgroundColor: nyala ? const Color(0xFFFEFCE8) : NeoColors.card,
-      shadowOffset: 3.0,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      onTap: onTap,
-      child: Row(
+      backgroundColor: (nyala == true) ? const Color(0xFFFEFCE8) : NeoColors.card,
+      shadowOffset: 3.5,
+      padding: const EdgeInsets.all(14),
+      onTap: () {
+        HapticFeedback.lightImpact();
+        showNeoToast(
+          context,
+          message: '${device.name} • Temp: ${temp?.toStringAsFixed(1) ?? "-"}°C',
+          icon: Icons.info_outline_rounded,
+          backgroundColor: NeoColors.yellow,
+        );
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: nyala ? NeoColors.yellow : NeoColors.muted,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: NeoColors.ink, width: 2.2),
-              boxShadow: const [
-                BoxShadow(
-                  color: NeoColors.ink,
-                  offset: Offset(1.8, 1.8),
-                  blurRadius: 0,
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: (nyala == true) ? NeoColors.yellow : NeoColors.muted,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: NeoColors.ink, width: 2.0),
                 ),
+                child: Icon(
+                  (nyala == true)
+                      ? Icons.lightbulb_rounded
+                      : Icons.devices_other_rounded,
+                  size: 20,
+                  color: NeoColors.ink,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      device.name,
+                      style: const TextStyle(
+                        fontFamily: NeoText.display,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                        color: NeoColors.ink,
+                      ),
+                    ),
+                    Text(
+                      'Device: ${device.id}',
+                      style: NeoText.monoKecil,
+                    ),
+                  ],
+                ),
+              ),
+              if (nyala != null) ...[
+                const SizedBox(width: 6),
+                StatusPill(menyala: nyala),
               ],
-            ),
-            child: Icon(
-              nyala ? Icons.lightbulb_rounded : Icons.lightbulb_outline_rounded,
-              size: 22,
-              color: NeoColors.ink,
-            ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: NeoColors.ink, width: 1.2),
+            ),
+            child: Row(
               children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontFamily: NeoText.display,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: -0.2,
-                    color: NeoColors.ink,
+                const Icon(Icons.place_rounded, size: 14, color: NeoColors.ink),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'Lokasi: ${device.location}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: NeoText.body,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: NeoColors.ink,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  pinInfo,
-                  style: NeoText.monoKecil,
-                ),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          StatusPill(menyala: nyala),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFCFFAFE),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: NeoColors.ink, width: 1.8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('TEMPERATURE', style: NeoText.label),
+                      const SizedBox(height: 2),
+                      Text(
+                        temp == null ? 'No data' : '${temp.toStringAsFixed(1)} °C',
+                        style: const TextStyle(
+                          fontFamily: NeoText.mono,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: NeoColors.ink,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEDE9FE),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: NeoColors.ink, width: 1.8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('HUMIDITY', style: NeoText.label),
+                      const SizedBox(height: 2),
+                      Text(
+                        hum == null ? 'No data' : '${hum.toStringAsFixed(1)} %',
+                        style: const TextStyle(
+                          fontFamily: NeoText.mono,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: NeoColors.ink,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Last update: ${latest?.createdAt?.toLocal().toString() ?? "-"}',
+            style: const TextStyle(
+              fontFamily: NeoText.mono,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: NeoColors.textMuted,
+            ),
+          ),
         ],
       ),
     );
@@ -985,76 +1299,6 @@ class _KartuMemuat extends StatelessWidget {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _KartuKosong extends StatelessWidget {
-  const _KartuKosong({required this.onRetry});
-
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return NeoCard(
-      backgroundColor: Colors.white,
-      child: Column(
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: NeoColors.muted,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: NeoColors.ink, width: 2.2),
-              boxShadow: const [
-                BoxShadow(
-                  color: NeoColors.ink,
-                  offset: Offset(2.5, 2.5),
-                  blurRadius: 0,
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.sensors_off_rounded,
-              color: NeoColors.ink,
-              size: 28,
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'BELUM ADA DATA SENSOR',
-            style: TextStyle(
-              fontFamily: NeoText.display,
-              fontSize: 16,
-              fontWeight: FontWeight.w900,
-              color: NeoColors.ink,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Jalankan simulator ESP32 (Wokwi) dan pastikan backend FastAPI menyala.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontFamily: NeoText.body,
-              color: NeoColors.textMuted,
-            ),
-          ),
-          const SizedBox(height: 16),
-          NeoButton(
-            onPressed: onRetry,
-            backgroundColor: NeoColors.lime,
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.refresh_rounded, size: 18),
-                SizedBox(width: 6),
-                Text('MUAT ULANG'),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
