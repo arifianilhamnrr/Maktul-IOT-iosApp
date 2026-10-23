@@ -57,6 +57,9 @@ flutter:
   uses-material-design: true
 
   fonts:
+    - family: SpaceGrotesk
+      fonts:
+        - asset: assets/fonts/SpaceGrotesk.ttf
     - family: FiraSans
       fonts:
         - asset: assets/fonts/FiraSans-Regular.ttf

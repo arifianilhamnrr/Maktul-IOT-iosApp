@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 
-/// Angka besar dengan transisi halus saat nilai berubah.
-/// Animasi dimatikan otomatis bila pengguna memakai Reduced Motion.
+/// Angka besar Neobrutalism dengan transisi halus saat nilai berubah.
 class MetricValue extends StatelessWidget {
   const MetricValue({
     super.key,
@@ -27,10 +26,19 @@ class MetricValue extends StatelessWidget {
       TextSpan(
         children: [
           TextSpan(text: nilai),
-          TextSpan(text: ' $satuan', style: gayaSatuan ?? AppText.monoKecil),
+          TextSpan(
+            text: ' $satuan',
+            style: gayaSatuan ??
+                const TextStyle(
+                  fontFamily: NeoText.mono,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: NeoColors.ink,
+                ),
+          ),
         ],
       ),
-      style: gaya ?? AppText.angka,
+      style: gaya ?? NeoText.angkaBesar,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
     );
@@ -40,18 +48,11 @@ class MetricValue extends StatelessWidget {
       child: kurangiGerak
           ? teks
           : AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              switchInCurve: Curves.easeOut,
-              switchOutCurve: Curves.easeIn,
+              duration: const Duration(milliseconds: 200),
+              switchInCurve: Curves.easeOutQuad,
+              switchOutCurve: Curves.easeInQuad,
               transitionBuilder: (child, animation) {
-                final geser = Tween<Offset>(
-                  begin: const Offset(0, 0.12),
-                  end: Offset.zero,
-                ).animate(animation);
-                return FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(position: geser, child: child),
-                );
+                return FadeTransition(opacity: animation, child: child);
               },
               child: KeyedSubtree(key: ValueKey(nilai), child: teks),
             ),

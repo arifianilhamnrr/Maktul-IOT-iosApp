@@ -16,9 +16,9 @@ class IotApp extends StatelessWidget {
     return MaterialApp(
       title: 'IoT Monitor',
       debugShowCheckedModeBanner: false,
-      theme: buildAppTheme(),
+      theme: buildNeoTheme(),
       home: const AnnotatedRegion<SystemUiOverlayStyle>(
-        value: SystemUiOverlayStyle.light,
+        value: SystemUiOverlayStyle.dark,
         child: HomeScreen(),
       ),
     );

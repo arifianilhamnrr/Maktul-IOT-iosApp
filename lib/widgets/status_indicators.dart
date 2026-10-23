@@ -21,20 +21,20 @@ extension LiveStatusStyle on LiveStatus {
   Color get color {
     switch (this) {
       case LiveStatus.live:
-        return AppColors.accent;
+        return NeoColors.lime;
       case LiveStatus.stale:
-        return AppColors.warning;
+        return NeoColors.yellow;
       case LiveStatus.paused:
-        return AppColors.mutedForeground;
+        return NeoColors.muted;
       case LiveStatus.waiting:
-        return AppColors.info;
+        return NeoColors.cyan;
     }
   }
 
   bool get berdenyut => this == LiveStatus.live;
 }
 
-/// Badge status data: hanya berlabel LIVE kalau memang ada pembaruan terbaru.
+/// Badge status data gaya Neobrutalism: border hitam tebal, bayangan keras 2px, warna pop.
 class LiveBadge extends StatefulWidget {
   const LiveBadge({super.key, required this.status});
 
@@ -48,13 +48,8 @@ class _LiveBadgeState extends State<LiveBadge>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1200),
+    duration: const Duration(milliseconds: 1000),
   );
-
-  @override
-  void initState() {
-    super.initState();
-  }
 
   @override
   void didChangeDependencies() {
@@ -92,32 +87,42 @@ class _LiveBadgeState extends State<LiveBadge>
     return Semantics(
       label: 'Status data: ${widget.status.label}',
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
-          color: warna.withValues(alpha: 0.12),
-          borderRadius: AppSpace.radiusPill,
-          border: Border.all(color: warna.withValues(alpha: 0.35)),
+          color: warna,
+          borderRadius: NeoBox.radiusPill,
+          border: Border.all(color: NeoColors.ink, width: 2.0),
+          boxShadow: const [
+            BoxShadow(
+              color: NeoColors.ink,
+              offset: Offset(2.5, 2.5),
+              blurRadius: 0,
+            ),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             FadeTransition(
-              opacity: Tween<double>(begin: 0.35, end: 1).animate(_controller),
+              opacity: Tween<double>(begin: 0.25, end: 1.0).animate(_controller),
               child: Container(
                 width: 8,
                 height: 8,
-                decoration: BoxDecoration(color: warna, shape: BoxShape.circle),
+                decoration: const BoxDecoration(
+                  color: NeoColors.ink,
+                  shape: BoxShape.circle,
+                ),
               ),
             ),
             const SizedBox(width: 8),
             Text(
               widget.status.label,
-              style: TextStyle(
-                fontFamily: AppText.body,
-                fontSize: 11,
-                letterSpacing: 0.8,
-                fontWeight: FontWeight.w700,
-                color: warna,
+              style: const TextStyle(
+                fontFamily: NeoText.display,
+                fontSize: 12,
+                letterSpacing: 1.0,
+                fontWeight: FontWeight.w800,
+                color: NeoColors.ink,
               ),
             ),
           ],
@@ -127,7 +132,7 @@ class _LiveBadgeState extends State<LiveBadge>
   }
 }
 
-/// Label status perangkat (Menyala / Mati).
+/// Label status perangkat (Menyala / Mati) gaya Neobrutalism.
 class StatusPill extends StatelessWidget {
   const StatusPill({super.key, required this.menyala});
 
@@ -135,33 +140,44 @@ class StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final warna = menyala ? AppColors.accent : AppColors.mutedForeground;
+    final warna = menyala ? NeoColors.lime : NeoColors.muted;
 
     return Semantics(
       label: menyala ? 'Status: menyala' : 'Status: mati',
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
-          color: warna.withValues(alpha: 0.12),
-          borderRadius: AppSpace.radiusPill,
-          border: Border.all(color: warna.withValues(alpha: 0.3)),
+          color: warna,
+          borderRadius: NeoBox.radiusPill,
+          border: Border.all(color: NeoColors.ink, width: 2.0),
+          boxShadow: const [
+            BoxShadow(
+              color: NeoColors.ink,
+              offset: Offset(2.0, 2.0),
+              blurRadius: 0,
+            ),
+          ],
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 6,
-              height: 6,
-              decoration: BoxDecoration(color: warna, shape: BoxShape.circle),
+              width: 7,
+              height: 7,
+              decoration: const BoxDecoration(
+                color: NeoColors.ink,
+                shape: BoxShape.circle,
+              ),
             ),
             const SizedBox(width: 6),
             Text(
-              menyala ? 'Menyala' : 'Mati',
-              style: TextStyle(
-                fontFamily: AppText.body,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: warna,
+              menyala ? 'MENYALA' : 'MATI',
+              style: const TextStyle(
+                fontFamily: NeoText.display,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.6,
+                color: NeoColors.ink,
               ),
             ),
           ],
